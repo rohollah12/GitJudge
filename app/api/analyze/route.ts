@@ -2,43 +2,16 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
-import { createClient } from 'genlayer-js';
 
 type RequestBody = {
   issueUrl?: string;
   prUrl?: string;
 };
 
-type GitHubIssue = {
-  html_url: string;
-  number: number;
-  title: string;
-  body: string | null;
-  state: string;
-  user?: { login?: string };
-};
+const URL_RE =
+  /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/)?$/i;
 
-type GitHubPullRequest = {
-  html_url: string;
-  number: number;
-  title: string;
-  body: string | null;
-  state: string;
-  merged_at: string | null;
-  base?: { ref?: string; sha?: string };
-  head?: { ref?: string; sha?: string };
-};
-
-type GitHubFile = {
-  filename: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  changes: number;
-  patch?: string;
-};
-
-const URL_RE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/)?$/i;
+/* ---------------- MAIN HANDLER ---------------- */
 
 export async function POST(req: Request) {
   try {
@@ -49,32 +22,34 @@ export async function POST(req: Request) {
 
     if (!issue || !pull) {
       return NextResponse.json(
-        { error: 'Please provide valid GitHub issue and PR URLs.' },
+        { error: 'Invalid GitHub issue or PR URL' },
         { status: 400 }
       );
     }
 
     if (issue.owner !== pull.owner || issue.repo !== pull.repo) {
       return NextResponse.json(
-        { error: 'Issue and PR must belong to same repo.' },
+        { error: 'Issue and PR must belong to same repo' },
         { status: 400 }
       );
     }
 
-    const githubToken = process.env.GITHUB_TOKEN?.trim();
-    const github = githubApi(githubToken);
+    const github = githubApi(process.env.GITHUB_TOKEN);
 
-    const [issueData, prData, files, readmeText, contributingText] =
-      await Promise.all([
-        github.fetchIssue(issue.owner, issue.repo, issue.number),
-        github.fetchPullRequest(pull.owner, pull.repo, pull.number),
-        github.fetchPullFiles(pull.owner, pull.repo, pull.number),
-        github.fetchOptionalText(issue.owner, issue.repo, 'README.md'),
-        github.fetchOptionalText(issue.owner, issue.repo, 'CONTRIBUTING.md'),
-      ]);
+    const [issueData, prData, files] = await Promise.all([
+      github.fetchIssue(issue.owner, issue.repo, issue.number),
+      github.fetchPullRequest(pull.owner, pull.repo, pull.number),
+      github.fetchPullFiles(pull.owner, pull.repo, pull.number),
+    ]);
+
+    const evidence = buildEvidence({
+      repository: `${issue.owner}/${issue.repo}`,
+      issueData,
+      prData,
+      files,
+    });
 
     const contractAddress = process.env.GENLAYER_CONTRACT_ADDRESS?.trim();
-
     if (!contractAddress) {
       return NextResponse.json(
         { error: 'Missing GENLAYER_CONTRACT_ADDRESS' },
@@ -82,39 +57,32 @@ export async function POST(req: Request) {
       );
     }
 
-    const client = createClient({ endpoint: process.env.GENLAYER_ENDPOINT || 'https://studio.genlayer.com/api' });
-
-    const evidence = buildEvidence({
-      repository: `${issue.owner}/${issue.repo}`,
-      issueData,
-      prData,
-      files,
-      readmeText,
-      contributingText,
-    });
-
-    const simulation = await callGenLayerSimulation(
-      client,
-      contractAddress,
-      evidence
-    );
+    const result = await callGenLayer(contractAddress, evidence);
 
     return NextResponse.json({
-      result: normalizeResult(simulation),
+      result: normalizeResult(result),
       repository: `${issue.owner}/${issue.repo}`,
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : 'Unknown error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'Unknown error' },
+      { status: 500 }
+    );
   }
 }
 
+/* ---------------- GITHUB ---------------- */
+
 function parseGithubUrl(value: unknown, kind: 'issues' | 'pull') {
   if (typeof value !== 'string') return null;
+
   const match = value.match(URL_RE);
   if (!match) return null;
+
   const [, owner, repo, type, number] = match;
+
   if (type !== kind) return null;
+
   return { owner, repo, number: Number(number) };
 }
 
@@ -123,6 +91,7 @@ function githubApi(token?: string) {
     Accept: 'application/vnd.github+json',
     'User-Agent': 'GitJudge',
   };
+
   if (token) headers.Authorization = `Bearer ${token}`;
 
   async function request<T>(url: string): Promise<T> {
@@ -133,54 +102,68 @@ function githubApi(token?: string) {
 
   return {
     fetchIssue: (o: string, r: string, n: number) =>
-      request<GitHubIssue>(
+      request(
         `https://api.github.com/repos/${o}/${r}/issues/${n}`
       ),
 
     fetchPullRequest: (o: string, r: string, n: number) =>
-      request<GitHubPullRequest>(
+      request(
         `https://api.github.com/repos/${o}/${r}/pulls/${n}`
       ),
 
     fetchPullFiles: (o: string, r: string, n: number) =>
-      request<GitHubFile[]>(
+      request(
         `https://api.github.com/repos/${o}/${r}/pulls/${n}/files`
       ),
-
-    fetchOptionalText: async (o: string, r: string, path: string) => {
-      try {
-        const res = await fetch(
-          `https://api.github.com/repos/${o}/${r}/contents/${path}`
-        );
-        if (!res.ok) return '';
-        const data: any = await res.json();
-        if (!data.content) return '';
-        return Buffer.from(data.content, 'base64').toString('utf8');
-      } catch {
-        return '';
-      }
-    },
   };
 }
 
-async function callGenLayerSimulation(
-  client: any,
-  address: string,
-  evidence: any
-) {
-  return await client.simulateWriteContract({
-    address: address as `0x${string}`,
-    functionName: 'analyze',
-    args: [JSON.stringify(evidence)],
+/* ---------------- GENLAYER (DIRECT JSON-RPC) ---------------- */
+
+async function callGenLayer(address: string, evidence: any) {
+  const endpoint =
+    process.env.GENLAYER_ENDPOINT ||
+    'https://studio.genlayer.com/api';
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: process.env.GENLAYER_API_KEY
+        ? `Bearer ${process.env.GENLAYER_API_KEY}`
+        : '',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: Date.now(),
+      method: 'gen_call',
+      params: {
+        address,
+        functionName: 'analyze',
+        args: [JSON.stringify(evidence)],
+      },
+    }),
   });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GenLayer error: ${text}`);
+  }
+
+  const data = await res.json();
+
+  // JSON-RPC result unwrap
+  return data?.result ?? data;
 }
+
+/* ---------------- LOGIC ---------------- */
 
 function buildEvidence(input: any) {
   return {
     repository: input.repository,
-    issue: input.issueData.title,
-    pull_request: input.prData.title,
-    files: input.files?.slice(0, 20),
+    issue: input.issueData?.title,
+    pull_request: input.prData?.title,
+    files: (input.files || []).slice(0, 20),
   };
 }
 
