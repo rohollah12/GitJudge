@@ -43,19 +43,20 @@ const URL_RE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as RequestBody;
+
     const issue = parseGithubUrl(body.issueUrl, 'issues');
     const pull = parseGithubUrl(body.prUrl, 'pull');
 
     if (!issue || !pull) {
       return NextResponse.json(
-        { error: 'Please paste a valid GitHub issue URL and pull request URL.' },
+        { error: 'Please provide valid GitHub issue and PR URLs.' },
         { status: 400 }
       );
     }
 
     if (issue.owner !== pull.owner || issue.repo !== pull.repo) {
       return NextResponse.json(
-        { error: 'Issue and PR must belong to the same repository for this MVP.' },
+        { error: 'Issue and PR must belong to same repo.' },
         { status: 400 }
       );
     }
@@ -63,28 +64,25 @@ export async function POST(req: Request) {
     const githubToken = process.env.GITHUB_TOKEN?.trim();
     const github = githubApi(githubToken);
 
-    const [issueData, prData, files, readmeText, contributingText] = await Promise.all([
-      github.fetchIssue(issue.owner, issue.repo, issue.number),
-      github.fetchPullRequest(pull.owner, pull.repo, pull.number),
-      github.fetchPullFiles(pull.owner, pull.repo, pull.number),
-      github.fetchOptionalText(issue.owner, issue.repo, 'README.md'),
-      github.fetchOptionalText(issue.owner, issue.repo, 'CONTRIBUTING.md'),
-    ]);
+    const [issueData, prData, files, readmeText, contributingText] =
+      await Promise.all([
+        github.fetchIssue(issue.owner, issue.repo, issue.number),
+        github.fetchPullRequest(pull.owner, pull.repo, pull.number),
+        github.fetchPullFiles(pull.owner, pull.repo, pull.number),
+        github.fetchOptionalText(issue.owner, issue.repo, 'README.md'),
+        github.fetchOptionalText(issue.owner, issue.repo, 'CONTRIBUTING.md'),
+      ]);
 
-    const endpoint = process.env.GENLAYER_ENDPOINT?.trim() || 'https://studio.genlayer.com/api';
     const contractAddress = process.env.GENLAYER_CONTRACT_ADDRESS?.trim();
 
     if (!contractAddress) {
       return NextResponse.json(
-        {
-          error:
-            'Missing GENLAYER_CONTRACT_ADDRESS. Deploy the contract in GenLayer Studio, then paste the address into Vercel.',
-        },
+        { error: 'Missing GENLAYER_CONTRACT_ADDRESS' },
         { status: 500 }
       );
     }
 
-    const client = createClient({ endpoint });
+    const client = createClient({ endpoint: process.env.GENLAYER_ENDPOINT || 'https://studio.genlayer.com/api' });
 
     const evidence = buildEvidence({
       repository: `${issue.owner}/${issue.repo}`,
@@ -95,161 +93,101 @@ export async function POST(req: Request) {
       contributingText,
     });
 
-    const simulation = await client.simulateWriteContract({
-      address: contractAddress as `0x${string}`,
-      functionName: 'analyze',
-      args: [JSON.stringify(evidence)],
-    });
+    const simulation = await callGenLayerSimulation(
+      client,
+      contractAddress,
+      evidence
+    );
 
-    const parsed = normalizeResult(simulation);
     return NextResponse.json({
-      ...parsed,
+      result: normalizeResult(simulation),
       repository: `${issue.owner}/${issue.repo}`,
-      issue: {
-        title: issueData.title,
-        body: truncate(issueData.body ?? '', 1000),
-      },
-      pull_request: {
-        title: prData.title,
-        body: truncate(prData.body ?? '', 1000),
-      },
-      used_token: Boolean(githubToken),
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown server error';
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
 function parseGithubUrl(value: unknown, kind: 'issues' | 'pull') {
   if (typeof value !== 'string') return null;
-  const match = value.trim().match(URL_RE);
+  const match = value.match(URL_RE);
   if (!match) return null;
-  const [, owner, repo, matchedKind, number] = match;
-  if (matchedKind.toLowerCase() !== kind) return null;
+  const [, owner, repo, type, number] = match;
+  if (type !== kind) return null;
   return { owner, repo, number: Number(number) };
 }
 
 function githubApi(token?: string) {
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'GitJudge-GenLayer',
-    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'GitJudge',
   };
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  async function requestJson<T>(url: string): Promise<T> {
-    const res = await fetch(url, { headers, cache: 'no-store' });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`GitHub API error ${res.status}: ${text || res.statusText}`);
-    }
-
-    return (await res.json()) as T;
-  }
-
-  async function fetchOptionalText(owner: string, repo: string, path: string) {
-    const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
-    const res = await fetch(url, { headers, cache: 'no-store' });
-
-    if (!res.ok) return '';
-    const data = (await res.json()) as { content?: string; encoding?: string };
-
-    if (!data.content) return '';
-    if (data.encoding !== 'base64') return '';
-
-    return Buffer.from(data.content, 'base64').toString('utf8');
+  async function request<T>(url: string): Promise<T> {
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
   }
 
   return {
-    fetchIssue: (owner: string, repo: string, number: number) =>
-      requestJson<GitHubIssue>(`https://api.github.com/repos/${owner}/${repo}/issues/${number}`),
-    fetchPullRequest: (owner: string, repo: string, number: number) =>
-      requestJson<GitHubPullRequest>(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`),
-    fetchPullFiles: async (owner: string, repo: string, number: number) => {
-      const files = await requestJson<GitHubFile[]>(
-        `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`
-      );
+    fetchIssue: (o: string, r: string, n: number) =>
+      request<GitHubIssue>(
+        `https://api.github.com/repos/${o}/${r}/issues/${n}`
+      ),
 
-      return files.map((file) => ({
-        filename: file.filename,
-        status: file.status,
-        additions: file.additions,
-        deletions: file.deletions,
-        changes: file.changes,
-        patch: truncate(file.patch ?? '', 1800),
-      }));
+    fetchPullRequest: (o: string, r: string, n: number) =>
+      request<GitHubPullRequest>(
+        `https://api.github.com/repos/${o}/${r}/pulls/${n}`
+      ),
+
+    fetchPullFiles: (o: string, r: string, n: number) =>
+      request<GitHubFile[]>(
+        `https://api.github.com/repos/${o}/${r}/pulls/${n}/files`
+      ),
+
+    fetchOptionalText: async (o: string, r: string, path: string) => {
+      try {
+        const res = await fetch(
+          `https://api.github.com/repos/${o}/${r}/contents/${path}`
+        );
+        if (!res.ok) return '';
+        const data: any = await res.json();
+        if (!data.content) return '';
+        return Buffer.from(data.content, 'base64').toString('utf8');
+      } catch {
+        return '';
+      }
     },
-    fetchOptionalText,
   };
 }
 
-function buildEvidence(input: {
-  repository: string;
-  issueData: GitHubIssue;
-  prData: GitHubPullRequest;
-  files: Array<{
-    filename: string;
-    status: string;
-    additions: number;
-    deletions: number;
-    changes: number;
-    patch: string;
-  }>;
-  readmeText: string;
-  contributingText: string;
-}) {
+async function callGenLayerSimulation(
+  client: any,
+  address: string,
+  evidence: any
+) {
+  return await client.simulateWriteContract({
+    address: address as `0x${string}`,
+    functionName: 'analyze',
+    args: [JSON.stringify(evidence)],
+  });
+}
+
+function buildEvidence(input: any) {
   return {
     repository: input.repository,
-    issue: {
-      number: input.issueData.number,
-      title: truncate(input.issueData.title, 300),
-      body: truncate(input.issueData.body ?? '', 4000),
-      state: input.issueData.state,
-      url: input.issueData.html_url,
-      author: input.issueData.user?.login ?? '',
-    },
-    pull_request: {
-      number: input.prData.number,
-      title: truncate(input.prData.title, 300),
-      body: truncate(input.prData.body ?? '', 4000),
-      state: input.prData.state,
-      merged_at: input.prData.merged_at,
-      base_ref: input.prData.base?.ref ?? '',
-      head_ref: input.prData.head?.ref ?? '',
-      url: input.prData.html_url,
-    },
-    changed_files: input.files.slice(0, 40),
-    repo_docs: {
-      readme: truncate(input.readmeText, 5000),
-      contributing: truncate(input.contributingText, 3500),
-    },
-    instructions:
-      'Judge whether the pull request actually satisfies the issue and repository docs. Return compact JSON only.',
+    issue: input.issueData.title,
+    pull_request: input.prData.title,
+    files: input.files?.slice(0, 20),
   };
 }
 
-function normalizeResult(value: unknown) {
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return { raw: value };
-    }
+function normalizeResult(v: any) {
+  try {
+    return typeof v === 'string' ? JSON.parse(v) : v;
+  } catch {
+    return { raw: String(v) };
   }
-
-  if (value && typeof value === 'object') {
-    return value;
-  }
-
-  return { raw: String(value) };
-}
-
-function truncate(text: string, limit: number) {
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n...[truncated]`;
 }
