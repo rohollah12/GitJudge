@@ -2,11 +2,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 import { NextResponse } from 'next/server';
-import {
-  decodeFunctionResult,
-  encodeFunctionData,
-  type Hex,
-} from 'viem';
+import { createClient } from 'genlayer-js';
 
 type RequestBody = {
   issueUrl?: string;
@@ -43,16 +39,6 @@ type GitHubFile = {
 const URL_RE =
   /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/)?$/i;
 
-const CONTRACT_ABI = [
-  {
-    type: 'function',
-    name: 'analyze',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'evidence_json', type: 'string' }],
-    outputs: [{ name: '', type: 'string' }],
-  },
-] as const;
-
 /* ---------------- MAIN HANDLER ---------------- */
 
 export async function POST(req: Request) {
@@ -65,14 +51,14 @@ export async function POST(req: Request) {
     if (!issue || !pull) {
       return NextResponse.json(
         { error: 'Invalid GitHub issue or PR URL' },
-        { status: 400 },
+        { status: 400 }
       );
     }
 
     if (issue.owner !== pull.owner || issue.repo !== pull.repo) {
       return NextResponse.json(
         { error: 'Issue and PR must belong to the same repo' },
-        { status: 400 },
+        { status: 400 }
       );
     }
 
@@ -92,11 +78,29 @@ export async function POST(req: Request) {
     });
 
     const contractAddress = mustEnv('GENLAYER_CONTRACT_ADDRESS');
-    const fromAddress = mustEnv('GENLAYER_FROM_ADDRESS');
     const endpoint =
       process.env.GENLAYER_ENDPOINT?.trim() || 'https://studio.genlayer.com/api';
 
-    const result = await callGenLayer(endpoint, fromAddress, contractAddress, evidence);
+    const client = createClient({ endpoint });
+
+    const txHash = await client.writeContract({
+      address: contractAddress as `0x${string}`,
+      functionName: 'analyze',
+      args: [JSON.stringify(evidence)],
+    });
+
+    await client.waitForTransactionReceipt({
+      hash: txHash,
+      status: 'FINALIZED',
+    });
+
+    const rawResult = await client.readContract({
+      address: contractAddress as `0x${string}`,
+      functionName: 'get_last_result',
+      args: [],
+    });
+
+    const result = normalizeResult(rawResult);
 
     return NextResponse.json({
       result,
@@ -114,7 +118,7 @@ export async function POST(req: Request) {
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : 'Unknown error' },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }
@@ -160,74 +164,6 @@ function githubApi(token?: string) {
     fetchPullFiles: (o: string, r: string, n: number) =>
       request<GitHubFile[]>(`https://api.github.com/repos/${o}/${r}/pulls/${n}/files`),
   };
-}
-
-/* ---------------- GENLAYER ---------------- */
-
-async function callGenLayer(
-  endpoint: string,
-  fromAddress: string,
-  contractAddress: string,
-  evidence: Record<string, unknown>,
-) {
-  const encodedData = encodeFunctionData({
-    abi: CONTRACT_ABI,
-    functionName: 'analyze',
-    args: [JSON.stringify(evidence)],
-  });
-
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: Date.now(),
-      method: 'gen_call',
-      params: [
-        {
-          from: fromAddress,
-          to: contractAddress,
-          data: encodedData,
-          type: 'write',
-          gas: '0x5208',
-          value: '0x0',
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`GenLayer HTTP error (${res.status}): ${text}`);
-  }
-
-  const payload = await res.json();
-
-  if (payload?.error) {
-    throw new Error(`GenLayer RPC error: ${JSON.stringify(payload.error)}`);
-  }
-
-  const result = payload?.result ?? payload;
-
-  if (result?.status?.code && result.status.code !== 0) {
-    throw new Error(`GenLayer execution error: ${result.status.message ?? 'unknown'}`);
-  }
-
-  const hexData = result?.data;
-  if (typeof hexData === 'string' && hexData.startsWith('0x')) {
-    const decoded = decodeFunctionResult({
-      abi: CONTRACT_ABI,
-      functionName: 'analyze',
-      data: hexData as Hex,
-    });
-
-    if (typeof decoded === 'string') return normalizeResult(decoded);
-    return normalizeResult(String(decoded));
-  }
-
-  return normalizeResult(hexData ?? result);
 }
 
 /* ---------------- LOGIC ---------------- */
