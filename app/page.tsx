@@ -10,26 +10,18 @@ type AnalysisResult = {
   requirements_met?: string[];
   missing?: string[];
   risk_flags?: string[];
-  issue?: {
-    title?: string;
-    body?: string;
-  };
-  pull_request?: {
-    title?: string;
-    body?: string;
-  };
   repository?: string;
   used_token?: boolean;
   raw?: unknown;
   error?: string;
 };
 
-const exampleIssue = 'https://github.com/vercel/next.js/issues/12345';
-const examplePr = 'https://github.com/vercel/next.js/pull/12346';
+const exampleIssue = 'https://github.com/microsoft/vscode-pull-request-github/issues/4508';
+const examplePr = 'https://github.com/microsoft/vscode-pull-request-github/pull/4686';
 
 export default function Page() {
-  const [issueUrl, setIssueUrl] = useState('');
-  const [prUrl, setPrUrl] = useState('');
+  const [issueUrl, setIssueUrl] = useState(exampleIssue);
+  const [prUrl, setPrUrl] = useState(examplePr);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState('');
@@ -70,8 +62,9 @@ export default function Page() {
         <div style={pillStyle}>GitJudge · GenLayer</div>
         <h1 style={titleStyle}>Judge a GitHub PR with one contract call.</h1>
         <p style={subtitleStyle}>
-          Paste an issue URL and a pull request URL. The Vercel route fetches GitHub data,
-          sends it to your deployed GenLayer contract, and shows the verdict.
+          Paste a GitHub issue URL and a pull request URL. The Vercel route fetches the issue,
+          PR, and file diff, sends the evidence to your deployed GenLayer contract, and renders
+          the result.
         </p>
       </section>
 
@@ -101,8 +94,8 @@ export default function Page() {
         </button>
 
         <p style={hintStyle}>
-          You only need to deploy the contract once in GenLayer Studio, then paste the contract
-          address into Vercel.
+          Set your GenLayer endpoint, contract address, and caller address in Vercel before
+          deploying.
         </p>
       </section>
 
@@ -129,23 +122,10 @@ export default function Page() {
           <ListCard title="Missing" items={result.missing ?? []} />
           <ListCard title="Risk flags" items={result.risk_flags ?? []} />
 
-          {(result.issue || result.pull_request) ? (
-            <div style={wideCardStyle}>
-              <div style={sectionLabelStyle}>Source snapshot</div>
-              <pre style={preStyle}>
-{JSON.stringify(
-  {
-    issue: result.issue,
-    pull_request: result.pull_request,
-    repository: result.repository,
-    used_token: result.used_token,
-  },
-  null,
-  2
-)}
-              </pre>
-            </div>
-          ) : null}
+          <div style={wideCardStyle}>
+            <div style={sectionLabelStyle}>Repository</div>
+            <p style={bodyTextStyle}>{result.repository ?? '—'}</p>
+          </div>
         </section>
       ) : null}
     </main>
@@ -158,8 +138,8 @@ function ListCard({ title, items }: { title: string; items: string[] }) {
       <div style={sectionLabelStyle}>{title}</div>
       {items.length ? (
         <ul style={listStyle}>
-          {items.map((item) => (
-            <li key={item} style={listItemStyle}>
+          {items.map((item, index) => (
+            <li key={`${title}-${index}`} style={listItemStyle}>
               {item}
             </li>
           ))}
@@ -351,12 +331,4 @@ const listStyle: CSSProperties = {
 const listItemStyle: CSSProperties = {
   lineHeight: 1.5,
   color: '#e2e8f0',
-};
-
-const preStyle: CSSProperties = {
-  margin: 0,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
-  color: '#cbd5e1',
-  lineHeight: 1.6,
 };

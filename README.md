@@ -1,22 +1,33 @@
 # GitJudge
 
-GitJudge is a GenLayer-powered AI adjudication system for open-source bounties and code contributions.
+GitJudge is a GenLayer-powered PR judge for GitHub issues and pull requests.
 
-Instead of relying on manual review and subjective decisions, GitJudge analyzes GitHub Issues, Pull Requests, and code changes to determine whether submitted work satisfies the original requirements.
+## What it does
 
-Using GenLayer's Intelligent Contracts, GitJudge provides consensus-backed evaluations including:
+- Takes a GitHub Issue URL and PR URL
+- Fetches issue, PR, and changed files
+- Sends evidence to a deployed GenLayer contract
+- Shows the verdict in the frontend
 
-* Requirement completion analysis
-* Pass/Fail recommendations
-* Completion scoring
-* Missing requirement detection
-* Automated bounty release recommendations
+## Files
 
-## How it works
+- `app/page.tsx` — frontend
+- `app/api/analyze/route.ts` — Vercel serverless API route
+- `contracts/gitjudge.py` — GenLayer contract
 
-1. User submits a GitHub Issue URL and Pull Request URL.
-2. GitJudge retrieves the issue requirements and code changes.
-3. A GenLayer Intelligent Contract evaluates the submission.
-4. The system returns a transparent, explainable verdict with a confidence score and payout recommendation.
+## Required environment variables
 
-GitJudge demonstrates how GenLayer can be used for real-world AI adjudication, milestone verification, and trustless dispute resolution.
+- `GENLAYER_ENDPOINT`
+- `GENLAYER_CONTRACT_ADDRESS`
+- `GENLAYER_FROM_ADDRESS`
+- `GITHUB_TOKEN` optional
+
+## Deploy steps
+
+1. Upload the project to GitHub.
+2. Deploy `contracts/gitjudge.py` in GenLayer Studio.
+3. Copy the contract address.
+4. Copy your GenLayer caller address into `GENLAYER_FROM_ADDRESS`.
+5. Deploy the repo on Vercel.
+6. Add environment variables.
+7. Open the app and test with Issue / PR URLs.

@@ -2,7 +2,6 @@
 
 from genlayer import *
 import json
-import typing
 
 
 class GitJudge(gl.Contract):
@@ -13,7 +12,7 @@ class GitJudge(gl.Contract):
 
     @gl.public.write
     def analyze(self, evidence_json: str) -> str:
-        def leader_fn() -> str:
+        def leader_fn():
             evidence = json.loads(evidence_json)
 
             prompt = f"""
@@ -22,10 +21,10 @@ You are GitJudge, a neutral bounty reviewer.
 Task:
 Decide whether this PR satisfies the issue and repo docs.
 
-Important rules:
+Rules:
 - Use only the provided evidence.
 - Be strict and practical.
-- Prefer concise JSON only.
+- Return JSON only.
 - decision must be PASS or FAIL.
 - score must be an integer from 0 to 100.
 - requirements_met, missing, risk_flags must be arrays of short strings.
@@ -45,7 +44,7 @@ Return exactly this JSON:
 }}
 """
 
-            result = gl.nondet.exec_prompt(prompt, response_format="json")
+            result = gl.nondet.exec_prompt(prompt, response_format='json')
             if not isinstance(result, dict):
                 raise gl.UserError("LLM did not return a JSON object")
 
@@ -66,19 +65,37 @@ Return exactly this JSON:
             if normalized["score"] > 100:
                 normalized["score"] = 100
 
-            return json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+            return normalized
 
         def validator_fn(leader_res) -> bool:
             if not isinstance(leader_res, gl.vm.Return):
                 return False
 
-            try:
-                my_raw = leader_fn()
-                return my_raw == leader_res.calldata
-            except Exception:
+            data = leader_res.calldata
+            if not isinstance(data, dict):
                 return False
 
-        result_json = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+            if str(data.get("decision", "")).upper() not in ["PASS", "FAIL"]:
+                return False
+
+            score = data.get("score")
+            if not isinstance(score, int) or score < 0 or score > 100:
+                return False
+
+            if not isinstance(data.get("summary", ""), str):
+                return False
+
+            for key in ["requirements_met", "missing", "risk_flags"]:
+                value = data.get(key)
+                if not isinstance(value, list):
+                    return False
+                if not all(isinstance(item, str) for item in value):
+                    return False
+
+            return True
+
+        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+        result_json = json.dumps(result, sort_keys=True, ensure_ascii=False)
         self.last_result = result_json
         return result_json
 
