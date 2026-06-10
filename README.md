@@ -1,33 +1,21 @@
 # GitJudge
 
-GitJudge is a GenLayer-powered PR judge for GitHub issues and pull requests.
+GenLayer-powered GitHub PR judge.
 
-## What it does
+## What to do
 
-- Takes a GitHub Issue URL and PR URL
-- Fetches issue, PR, and changed files
-- Sends evidence to a deployed GenLayer contract
-- Shows the verdict in the frontend
+1. Deploy `contracts/gitjudge.py` in GenLayer Studio.
+2. Copy the contract address.
+3. Put the project on GitHub.
+4. Import the repo into Vercel.
+5. Add environment variables:
+   - `GENLAYER_ENDPOINT`
+   - `GENLAYER_CONTRACT_ADDRESS`
+   - `GITHUB_TOKEN` optional
+6. Deploy and test with an issue URL and PR URL.
 
 ## Files
 
-- `app/page.tsx` — frontend
-- `app/api/analyze/route.ts` — Vercel serverless API route
-- `contracts/gitjudge.py` — GenLayer contract
-
-## Required environment variables
-
-- `GENLAYER_ENDPOINT`
-- `GENLAYER_CONTRACT_ADDRESS`
-- `GENLAYER_FROM_ADDRESS`
-- `GITHUB_TOKEN` optional
-
-## Deploy steps
-
-1. Upload the project to GitHub.
-2. Deploy `contracts/gitjudge.py` in GenLayer Studio.
-3. Copy the contract address.
-4. Copy your GenLayer caller address into `GENLAYER_FROM_ADDRESS`.
-5. Deploy the repo on Vercel.
-6. Add environment variables.
-7. Open the app and test with Issue / PR URLs.
+- `app/page.tsx`
+- `app/api/analyze/route.ts`
+- `contracts/gitjudge.py`
