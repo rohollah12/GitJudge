@@ -35,16 +35,10 @@ type GitHubFile = {
   patch?: string | null;
 };
 
-const URL_RE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/)?$/i;
+const URL_RE =
+  /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/)?$/i;
 
-type GenLayerClient = {
-  writeContract: (args: { address: `0x${string}`; functionName: string; args?: unknown[] }) => Promise<string>;
-  waitForTransactionReceipt: (args: { hash: string; status: 'ACCEPTED' | 'FINALIZED' }) => Promise<unknown>;
-  readContract: (args: { address: `0x${string}`; functionName: string; args?: unknown[] }) => Promise<unknown>;
-};
-
-const CONTRACT_WRITE_FN = 'analyze';
-const CONTRACT_READ_FN = 'get_last_result';
+type GenLayerClient = any;
 
 export async function POST(req: Request) {
   try {
@@ -54,59 +48,73 @@ export async function POST(req: Request) {
     const pull = parseGithubUrl(body.prUrl, 'pull');
 
     if (!issue || !pull) {
-      return NextResponse.json({ error: 'Invalid GitHub issue or PR URL' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Invalid GitHub issue or PR URL' },
+        { status: 400 },
+      );
     }
 
     if (issue.owner !== pull.owner || issue.repo !== pull.repo) {
-      return NextResponse.json({ error: 'Issue and PR must belong to the same repo' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Issue and PR must belong to the same repo' },
+        { status: 400 },
+      );
     }
 
     const github = githubApi(process.env.GITHUB_TOKEN);
+
     const [issueData, prData, files] = await Promise.all([
       github.fetchIssue(issue.owner, issue.repo, issue.number),
       github.fetchPullRequest(pull.owner, pull.repo, pull.number),
       github.fetchPullFiles(pull.owner, pull.repo, pull.number),
     ]);
 
-    const evidence = buildEvidence({ repository: `${issue.owner}/${issue.repo}`, issueData, prData, files });
+    const evidence = buildEvidence({
+      repository: `${issue.owner}/${issue.repo}`,
+      issueData,
+      prData,
+      files,
+    });
 
     const contractAddress = mustEnv('GENLAYER_CONTRACT_ADDRESS');
-    const client = await createGenLayerClient();
+    const endpoint =
+      process.env.GENLAYER_ENDPOINT?.trim() || 'https://studio.genlayer.com/api';
 
-    const txHash = await client.writeContract({
-      address: contractAddress as `0x${string}`,
-      functionName: CONTRACT_WRITE_FN,
-      args: [JSON.stringify(evidence)],
-    });
+    const client = await createGenLayerClient(endpoint);
 
-    await client.waitForTransactionReceipt({ hash: txHash, status: 'FINALIZED' });
-
-    const raw = await client.readContract({
-      address: contractAddress as `0x${string}`,
-      functionName: CONTRACT_READ_FN,
-      args: [],
-    });
-
-    const result = normalizeResult(raw);
+    const result = await callGenLayer(client, contractAddress, evidence);
 
     return NextResponse.json({
       result,
       repository: `${issue.owner}/${issue.repo}`,
       used_token: Boolean(process.env.GITHUB_TOKEN?.trim()),
-      issue: { title: issueData.title, body: issueData.body ?? '' },
-      pull_request: { title: prData.title, body: prData.body ?? '' },
+      issue: {
+        title: issueData.title,
+        body: issueData.body ?? '',
+      },
+      pull_request: {
+        title: prData.title,
+        body: prData.body ?? '',
+      },
     });
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : 'Unknown error' }, { status: 500 });
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'Unknown error' },
+      { status: 500 },
+    );
   }
 }
 
 function parseGithubUrl(value: unknown, kind: 'issues' | 'pull') {
   if (typeof value !== 'string') return null;
+
   const match = value.match(URL_RE);
   if (!match) return null;
+
   const [, owner, repo, type, number] = match;
+
   if (type !== kind) return null;
+
   return { owner, repo, number: Number(number) };
 }
 
@@ -120,33 +128,71 @@ function githubApi(token?: string) {
 
   async function request<T>(url: string): Promise<T> {
     const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error(`GitHub API error (${res.status}): ${await res.text()}`);
+    if (!res.ok) {
+      throw new Error(`GitHub API error (${res.status}): ${await res.text()}`);
+    }
     return res.json() as Promise<T>;
   }
 
   return {
-    fetchIssue: (o: string, r: string, n: number) => request<GitHubIssue>(`https://api.github.com/repos/${o}/${r}/issues/${n}`),
-    fetchPullRequest: (o: string, r: string, n: number) => request<GitHubPr>(`https://api.github.com/repos/${o}/${r}/pulls/${n}`),
-    fetchPullFiles: (o: string, r: string, n: number) => request<GitHubFile[]>(`https://api.github.com/repos/${o}/${r}/pulls/${n}/files`),
+    fetchIssue: (o: string, r: string, n: number) =>
+      request<GitHubIssue>(`https://api.github.com/repos/${o}/${r}/issues/${n}`),
+
+    fetchPullRequest: (o: string, r: string, n: number) =>
+      request<GitHubPr>(`https://api.github.com/repos/${o}/${r}/pulls/${n}`),
+
+    fetchPullFiles: (o: string, r: string, n: number) =>
+      request<GitHubFile[]>(`https://api.github.com/repos/${o}/${r}/pulls/${n}/files`),
   };
 }
 
-async function createGenLayerClient(): Promise<GenLayerClient> {
-  const endpoint = process.env.GENLAYER_ENDPOINT?.trim() || 'https://studio.genlayer.com/api';
-  const mod: any = await import('genlayer-js');
-  const chains: any = await import('genlayer-js/chains');
-
-  const account = mod.createAccount();
-  const client = mod.createClient({
-    chain: chains.simulator,
-    account,
-    endpoint,
-  });
-
-  return client as GenLayerClient;
+async function createGenLayerClient(endpoint: string): Promise<GenLayerClient> {
+  const mod = await import('genlayer-js');
+  const client = mod.createClient({ endpoint });
+  return client;
 }
 
-function buildEvidence(input: { repository: string; issueData: GitHubIssue; prData: GitHubPr; files: GitHubFile[]; }) {
+async function callGenLayer(
+  client: GenLayerClient,
+  contractAddress: string,
+  evidence: Record<string, unknown>,
+) {
+  const payload = JSON.stringify(evidence);
+
+  if (typeof client.simulateWriteContract === 'function') {
+    const simulated = await client.simulateWriteContract({
+      address: contractAddress as `0x${string}`,
+      functionName: 'analyze',
+      args: [payload],
+    });
+
+    return normalizeResult(
+      simulated?.result ?? simulated?.data ?? simulated ?? null,
+    );
+  }
+
+  if (typeof client.writeContract === 'function') {
+    const txHash = await client.writeContract({
+      address: contractAddress as `0x${string}`,
+      functionName: 'analyze',
+      args: [payload],
+    });
+
+    return {
+      txHash,
+      warning: 'writeContract completed, but this route does not wait for receipt.',
+    };
+  }
+
+  throw new Error('GenLayer client does not expose simulateWriteContract or writeContract');
+}
+
+function buildEvidence(input: {
+  repository: string;
+  issueData: GitHubIssue;
+  prData: GitHubPr;
+  files: GitHubFile[];
+}) {
   return {
     repository: input.repository,
     issue: {
@@ -178,7 +224,11 @@ function buildEvidence(input: { repository: string; issueData: GitHubIssue; prDa
 
 function normalizeResult(v: unknown) {
   if (typeof v === 'string') {
-    try { return JSON.parse(v); } catch { return { raw: v }; }
+    try {
+      return JSON.parse(v);
+    } catch {
+      return { raw: v };
+    }
   }
   return v;
 }
@@ -190,6 +240,8 @@ function trimText(text: string, limit: number) {
 
 function mustEnv(name: string) {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`Missing ${name}`);
+  if (!value) {
+    throw new Error(`Missing ${name}`);
+  }
   return value;
 }
