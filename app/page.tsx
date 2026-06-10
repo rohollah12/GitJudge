@@ -44,7 +44,13 @@ export default function Page() {
       const data = (await response.json()) as AnalysisResult;
 
       if (!response.ok) throw new Error(data?.error ?? 'Analysis failed');
-      setResult(data);
+      setResult({
+        ...(data.result || {}),
+        repository: data.repository,
+        issue: data.issue,
+        pull_request: data.pull_request,
+        used_token: data.used_token,
+      });;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
