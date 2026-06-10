@@ -32,6 +32,9 @@ const exampleIssue =
 const examplePr =
   'https://github.com/microsoft/vscode-pull-request-github/pull/4686';
 
+const CONTRACT_ADDRESS =
+  process.env.NEXT_PUBLIC_GENLAYER_CONTRACT_ADDRESS || 'Not configured';
+
 export default function Page() {
   const [issueUrl, setIssueUrl] = useState(exampleIssue);
   const [prUrl, setPrUrl] = useState(examplePr);
@@ -85,11 +88,12 @@ export default function Page() {
   return (
     <main style={pageStyle}>
       <section style={heroStyle}>
-        <div style={pillStyle}>GitJudge · GenLayer</div>
-        <h1 style={titleStyle}>Judge a GitHub PR with one contract call.</h1>
+        <div style={pillStyle}>GitJudge · Autonomous Code Review</div>
+        <h1 style={titleStyle}>AI-Powered GitHub Contribution Review</h1>
         <p style={subtitleStyle}>
-          Paste an issue URL and a pull request URL. The Vercel route fetches GitHub data,
-          sends it to your deployed GenLayer contract, and renders the verdict.
+          Compare a GitHub issue with a proposed pull request and receive an independent
+          assessment of implementation quality, requirement coverage, missing work,
+          and potential risks.
         </p>
       </section>
 
@@ -119,8 +123,8 @@ export default function Page() {
         </button>
 
         <p style={hintStyle}>
-          You only need to deploy the contract once in GenLayer Studio, then paste the contract
-          address into Vercel.
+          GitJudge evaluates whether a pull request actually solves the reported issue,
+          highlights missing requirements, and identifies potential implementation risks.
         </p>
       </section>
 
@@ -150,6 +154,33 @@ export default function Page() {
           <div style={wideCardStyle}>
             <div style={sectionLabelStyle}>Repository</div>
             <p style={bodyTextStyle}>{meta.repository ?? '—'}</p>
+          </div>
+
+          <div style={wideCardStyle}>
+            <div style={sectionLabelStyle}>GenLayer Contract Address</div>
+            <p style={bodyTextStyle}>{CONTRACT_ADDRESS}</p>
+          </div>
+
+          <div style={wideCardStyle}>
+            <div style={sectionLabelStyle}>What the Contract Does</div>
+            <p style={bodyTextStyle}>
+              GitJudge collects the issue text, pull request details, and changed files from
+              GitHub, then asks the GenLayer contract to review the evidence and return a
+              structured verdict. The contract produces a PASS or FAIL decision, a score,
+              a short summary, the requirements that were met, the missing parts, and any
+              risk flags it detects.
+            </p>
+          </div>
+
+          <div style={wideCardStyle}>
+            <div style={sectionLabelStyle}>Review Model</div>
+            <p style={bodyTextStyle}>
+              Decision: PASS / FAIL
+              <br />
+              Score: 0-100
+              <br />
+              Outputs: Summary, Requirements Met, Missing Requirements, Risk Flags
+            </p>
           </div>
 
           <div style={wideCardStyle}>
